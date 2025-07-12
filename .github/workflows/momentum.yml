@@ -1,0 +1,87 @@
+name: 모멘텀 분석 자동 실행
+
+# 언제 실행할지 설정
+on:
+  schedule:
+    # 크론 표현식: 분 시 일 월 요일 (UTC 기준)
+    # 매일 한국시간 오전 9시 = UTC 0시
+    - cron: '0 0 * * *'
+    
+    # 다른 스케줄 예시:
+    # - cron: '0 0 * * 1'     # 매주 월요일 오전 9시 (한국시간)
+    # - cron: '0 0 1 * *'     # 매월 1일 오전 9시
+    # - cron: '0 0,12 * * *'  # 매일 오전9시, 오후9시
+  
+  # 수동 실행 가능하도록 설정
+  workflow_dispatch:
+
+# 환경변수 설정 (전역)
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  TZ: Asia/Seoul
+
+jobs:
+  momentum-analysis:
+    name: 모멘텀 분석 실행
+    runs-on: ubuntu-latest
+    
+    steps:
+    # 1. 코드 체크아웃
+    - name: 📥 코드 가져오기
+      uses: actions/checkout@v4
+    
+    # 2. Python 환경 설정
+    - name: 🐍 Python 환경 설정
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    # 3. 의존성 캐시 설정 (선택사항, 속도 향상)
+    - name: 📦 의존성 캐시
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    # 4. 라이브러리 설치
+    - name: 📚 라이브러리 설치
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    # 5. 실행 권한 부여 (필요시)
+    - name: 🔐 실행 권한 설정
+      run: chmod +x momentum_analysis.py
+    
+    # 6. 모멘텀 분석 실행
+    - name: 📊 모멘텀 분석 실행
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: |
+        python momentum_analysis.py
+    
+    # 7. 로그 업로드 (실패시에도 업로드)
+    - name: 📋 로그 파일 업로드
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: analysis-logs-${{ github.run_number }}
+        path: |
+          momentum_analysis.log
+          *.log
+        retention-days: 30
+    
+    # 8. 실패시 알림 (선택사항)
+    - name: 🚨 실패 알림
+      if: failure()
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: |
+        curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage \
+          -d chat_id=${CHAT_ID} \
+          -d text="❌ GitHub Actions 실행 실패: ${{ github.repository }} - ${{ github.run_id }}"
