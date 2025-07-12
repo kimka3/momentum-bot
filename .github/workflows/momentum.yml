@@ -1,0 +1,114 @@
+name: 모멘텀 분석 자동 실행
+
+on:
+  schedule:
+    # 매일 한국시간 오전 9시 (UTC 0시)에 실행
+    - cron: '0 0 * * *'
+  
+  # 수동 실행 가능
+  workflow_dispatch:
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  TZ: Asia/Seoul
+
+jobs:
+  momentum-analysis:
+    name: 모멘텀 분석 실행
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+    - name: 📥 코드 가져오기
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Python 환경 설정
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: 📦 의존성 캐시
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: 📚 라이브러리 설치
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 🔍 환경 확인
+      run: |
+        echo "Python 버전: $(python --version)"
+        echo "pip 버전: $(pip --version)"
+        echo "현재 시간 (UTC): $(date -u)"
+        echo "현재 시간 (KST): $(TZ=Asia/Seoul date)"
+        echo "작업 디렉토리: $(pwd)"
+        echo "파일 목록:"
+        ls -la
+        echo "설치된 패키지:"
+        pip list | grep -E "(yfinance|pandas|requests|numpy)"
+    
+    - name: 📊 모멘텀 분석 실행
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: |
+        python main.py
+    
+    - name: 📋 로그 파일 업로드
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: analysis-logs-${{ github.run_number }}
+        path: |
+          main.log
+          momentum_analysis.log
+          *.log
+        retention-days: 7
+        compression-level: 6
+    
+    - name: ✅ 성공 알림
+      if: success()
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: |
+        MESSAGE="✅ 모멘텀 분석 성공적으로 완료
+        
+        📊 리포지토리: ${{ github.repository }}
+        🔗 실행 ID: ${{ github.run_id }}
+        📅 실행 시간: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M:%S KST')
+        ⏱️ 소요 시간: ${{ github.event.workflow_run.duration || 'N/A' }}
+        
+        자세한 결과는 위에서 확인하세요! 📈"
+        
+        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+          -d "chat_id=${CHAT_ID}" \
+          -d "text=${MESSAGE}" \
+          -d "parse_mode=HTML"
+    
+    - name: 🚨 실패 알림
+      if: failure()
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: |
+        MESSAGE="❌ GitHub Actions 실행 실패
+        
+        📊 리포지토리: ${{ github.repository }}
+        🔗 실행 ID: ${{ github.run_id }}
+        📅 실패 시간: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M:%S KST')
+        
+        🔍 로그 확인: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        
+        잠시 후 다시 시도하거나 로그를 확인해 주세요."
+        
+        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+          -d "chat_id=${CHAT_ID}" \
+          -d "text=${MESSAGE}" \
+          -d "parse_mode=HTML"
