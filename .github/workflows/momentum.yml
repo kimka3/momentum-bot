@@ -1,87 +1,333 @@
-name: 모멘텀 분석 자동 실행
+import yfinance as yf
+import pandas as pd
+from datetime import datetime, timedelta, timezone
+import warnings
+import numpy as np
+import requests
+import os
+import logging
+from typing import Dict, List, Optional, Tuple
+import sys
+import platform
 
-# 언제 실행할지 설정
-on:
-  schedule:
-    # 크론 표현식: 분 시 일 월 요일 (UTC 기준)
-    # 매일 한국시간 오전 9시 = UTC 0시
-    - cron: '0 0 * * *'
-    
-    # 다른 스케줄 예시:
-    # - cron: '0 0 * * 1'     # 매주 월요일 오전 9시 (한국시간)
-    # - cron: '0 0 1 * *'     # 매월 1일 오전 9시
-    # - cron: '0 0,12 * * *'  # 매일 오전9시, 오후9시
-  
-  # 수동 실행 가능하도록 설정
-  workflow_dispatch:
+# 경고 메시지 숨기기
+warnings.filterwarnings('ignore')
 
-# 환경변수 설정 (전역)
-env:
-  PYTHONPATH: ${{ github.workspace }}
-  TZ: Asia/Seoul
+# ======================== [환경 디버깅] ========================
+def debug_environment():
+    """환경 정보 출력"""
+    print(f"Python 버전: {sys.version}")
+    print(f"플랫폼: {platform.platform()}")
+    print(f"pandas 버전: {pd.__version__}")
+    print(f"yfinance 버전: {yf.__version__}")
+    print(f"현재 시간 (UTC): {datetime.utcnow()}")
+    print(f"현재 시간 (로컬): {datetime.now()}")
+    print(f"작업 디렉토리: {os.getcwd()}")
+    
+    # 네트워크 테스트
+    try:
+        response = requests.get("https://finance.yahoo.com", timeout=10)
+        print(f"Yahoo Finance 접근: ✓ (상태코드: {response.status_code})")
+    except Exception as e:
+        print(f"Yahoo Finance 접근: ❌ ({e})")
 
-jobs:
-  momentum-analysis:
-    name: 모멘텀 분석 실행
-    runs-on: ubuntu-latest
+# ======================== [로깅 설정] ========================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('main.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# ======================== [설정] ========================
+# 환경변수에서 토큰 정보 가져오기 (보안 강화)
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '7200427583:AAE6ZBTRvhfSnrYWstUsOGdgnN4YUxy7OcQ')
+CHAT_ID = os.getenv('CHAT_ID', '6932457088')
+
+# 분석 대상 자산 (PythonAnywhere에서 잘 작동하는 심플한 티커들)
+tickers = {
+    "S&P 500": "^GSPC",
+    "나스닥": "^IXIC", 
+    "비트코인": "BTC-USD",
+    "금": "GC=F",
+    "미국 국채": "TLT"
+}
+
+# 모멘텀 분석 설정
+MOMENTUM_MIN_SCORE = 1.0  # 더 관대한 최소 점수
+MOMENTUM_MAX_SCORE = 4.0  # 더 관대한 최대 점수
+MAX_ASSETS = 3  # 최대 선택 자산 수
+ANALYSIS_PERIOD_YEARS = 1  # 분석 기간을 1년으로 단축
+
+# ======================== [함수] ========================
+def send_telegram(message: str) -> bool:
+    """텔레그램으로 메시지 전송"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+
+    try:
+        response = requests.post(url, data=data, timeout=10)
+        if response.status_code == 200:
+            logger.info("✓ 텔레그램 메시지 전송 성공")
+            return True
+        else:
+            logger.error(f"⚠️ 텔레그램 전송 실패: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"⚠️ 텔레그램 전송 오류: {e}")
+        return False
+
+def safe_normalize_index(df):
+    """안전한 인덱스 정규화"""
+    try:
+        # timezone 정보 제거
+        if hasattr(df.index, 'tz') and df.index.tz is not None:
+            df.index = df.index.tz_convert(None)
+        
+        # DatetimeIndex 변환
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        
+        # normalize 적용
+        if hasattr(df.index, 'normalize'):
+            df.index = df.index.normalize()
+        else:
+            # normalize가 없다면 시간 부분을 수동으로 제거
+            df.index = df.index.date
+            df.index = pd.to_datetime(df.index)
+            
+        return df
+    except Exception as e:
+        logger.warning(f"인덱스 정규화 실패: {e}")
+        return df
+
+def download_single_ticker(ticker: str, start_date: datetime, end_date: datetime, retries: int = 3):
+    """단일 티커 다운로드 (재시도 로직 포함)"""
+    for attempt in range(retries):
+        try:
+            logger.info(f"다운로드 시도 {attempt+1}/{retries}: {ticker}")
+            
+            # 간단한 다운로드 시도
+            data = yf.download(
+                ticker, 
+                start=start_date.date(), 
+                end=(end_date + timedelta(days=1)).date(),
+                progress=False,
+                show_errors=False,
+                timeout=30
+            )
+            
+            if data.empty:
+                logger.warning(f"빈 데이터: {ticker}")
+                continue
+                
+            # Adj Close 또는 Close 선택
+            if 'Adj Close' in data.columns and not data['Adj Close'].isna().all():
+                price_series = data['Adj Close'].dropna()
+            elif 'Close' in data.columns and not data['Close'].isna().all():
+                price_series = data['Close'].dropna()
+            else:
+                logger.warning(f"가격 데이터 없음: {ticker}")
+                continue
+            
+            if len(price_series) < 50:  # 최소 50일 데이터 필요
+                logger.warning(f"데이터 부족: {ticker} ({len(price_series)}일)")
+                continue
+                
+            # 인덱스 정규화
+            price_series = safe_normalize_index(pd.DataFrame({'price': price_series}))['price']
+            
+            logger.info(f"✓ 다운로드 성공: {ticker} ({len(price_series)}일)")
+            return price_series
+            
+        except Exception as e:
+            logger.warning(f"다운로드 실패 {attempt+1}: {ticker} - {e}")
+            if attempt < retries - 1:
+                import time
+                time.sleep(2)  # 2초 대기 후 재시도
+            continue
     
-    steps:
-    # 1. 코드 체크아웃
-    - name: 📥 코드 가져오기
-      uses: actions/checkout@v4
+    logger.error(f"모든 재시도 실패: {ticker}")
+    return None
+
+def download_data_robust(tickers_dict: Dict[str, str], start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    """강화된 데이터 다운로드"""
+    logger.info(f"강화된 데이터 다운로드: {start_date.date()} ~ {end_date.date()}")
     
-    # 2. Python 환경 설정
-    - name: 🐍 Python 환경 설정
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-        cache: 'pip'
+    all_data = {}
     
-    # 3. 의존성 캐시 설정 (선택사항, 속도 향상)
-    - name: 📦 의존성 캐시
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+    for name, ticker in tickers_dict.items():
+        price_data = download_single_ticker(ticker, start_date, end_date)
+        if price_data is not None:
+            all_data[ticker] = price_data
     
-    # 4. 라이브러리 설치
-    - name: 📚 라이브러리 설치
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+    if not all_data:
+        raise ValueError("다운로드된 데이터가 없습니다.")
     
-    # 5. 실행 권한 부여 (필요시)
-    - name: 🔐 실행 권한 설정
-      run: chmod +x main.py
+    # DataFrame 결합
+    data = pd.DataFrame(all_data)
+    data = data.ffill().dropna()
     
-    # 6. 모멘텀 분석 실행
-    - name: 📊 모멘텀 분석 실행
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        CHAT_ID: ${{ secrets.CHAT_ID }}
-      run: |
-        python main.py
+    logger.info(f"✓ 최종 데이터: {len(data)}일, {len(data.columns)}개 자산")
+    return data
+
+def calculate_momentum(prices: pd.Series, target_date: datetime) -> Tuple[Optional[float], Optional[float]]:
+    """모멘텀 점수 계산 (간소화)"""
+    try:
+        # target_date를 pandas Timestamp로 변환
+        target_ts = pd.Timestamp(target_date.date())
+        
+        # 현재 가격 (target_date 이전의 최신 가격)
+        current_prices = prices.loc[prices.index.normalize() <= target_ts]
+        if current_prices.empty:
+            return None, None
+        current_price = current_prices.iloc[-1]
+        
+        # 3개월, 6개월 전 가격 (기간 단축)
+        three_months_ago = target_ts - pd.DateOffset(months=3)
+        six_months_ago = target_ts - pd.DateOffset(months=6)
+        
+        price_3m_series = prices.loc[prices.index.normalize() <= three_months_ago]
+        price_6m_series = prices.loc[prices.index.normalize() <= six_months_ago]
+        
+        if price_3m_series.empty or price_6m_series.empty:
+            return None, None
+            
+        price_3m = price_3m_series.iloc[-1]
+        price_6m = price_6m_series.iloc[-1]
+        
+        # 모멘텀 점수 계산
+        momentum_3m = current_price / price_3m
+        momentum_6m = current_price / price_6m
+        score = (momentum_3m + momentum_6m) / 2
+        
+        return round(score, 3), current_price
+        
+    except Exception as e:
+        logger.warning(f"모멘텀 계산 실패: {e}")
+        return None, None
+
+def analyze_individual_asset(name: str, ticker: str, data: pd.DataFrame, target_date: datetime) -> Optional[Dict]:
+    """개별 자산 분석"""
+    if ticker not in data.columns:
+        return None
     
-    # 7. 로그 업로드 (실패시에도 업로드)
-    - name: 📋 로그 파일 업로드
-      uses: actions/upload-artifact@v3
-      if: always()
-      with:
-        name: analysis-logs-${{ github.run_number }}
-        path: |
-          momentum_analysis.log
-          *.log
-        retention-days: 30
+    try:
+        score, price = calculate_momentum(data[ticker], target_date)
+        if score is None:
+            return None
+        
+        # 변동성 계산 (간소화)
+        returns = data[ticker].pct_change().dropna()
+        volatility = returns.std() * np.sqrt(252) if len(returns) > 0 else None
+        
+        return {
+            'name': name,
+            'ticker': ticker,
+            'score': score,
+            'price': price,
+            'volatility': round(volatility, 3) if volatility is not None else None
+        }
+    except Exception as e:
+        logger.error(f"자산 분석 실패 {name}: {e}")
+        return None
+
+def select_assets(results: List[Dict]) -> List[Dict]:
+    """모멘텀 기준으로 자산 선택"""
+    filtered = [r for r in results if r['score'] is not None and MOMENTUM_MIN_SCORE <= r['score'] < MOMENTUM_MAX_SCORE]
+    sorted_assets = sorted(filtered, key=lambda x: x['score'], reverse=True)
+    return sorted_assets[:MAX_ASSETS]
+
+def create_portfolio_message(selected_assets: List[Dict], date: datetime) -> str:
+    """포트폴리오 메시지 생성"""
+    date_str = date.strftime('%Y-%m-%d')
+    message = f"📊 <b>{date_str} 모멘텀 포트폴리오</b>\n\n"
     
-    # 8. 실패시 알림 (선택사항)
-    - name: 🚨 실패 알림
-      if: failure()
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        CHAT_ID: ${{ secrets.CHAT_ID }}
-      run: |
-        curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage \
-          -d chat_id=${CHAT_ID} \
-          -d text="❌ GitHub Actions 실행 실패: ${{ github.repository }} - ${{ github.run_id }}"
+    if not selected_assets:
+        message += "❌ 조건에 맞는 자산 없음 → 현금 보유 권장\n"
+        message += f"(점수 범위: {MOMENTUM_MIN_SCORE}~{MOMENTUM_MAX_SCORE})"
+        return message
+    
+    weight = round(100 / len(selected_assets), 1)
+    
+    for i, asset in enumerate(selected_assets, 1):
+        message += f"<b>{i}. {asset['name']}</b>\n"
+        message += f"   • 모멘텀 점수: {asset['score']}\n"
+        message += f"   • 비중: {weight}%\n"
+        message += f"   • 현재가: ${asset['price']:,.2f}\n\n"
+    
+    return message
+
+def analyze_momentum():
+    """메인 분석 함수"""
+    logger.info("🚀 모멘텀 분석 시작")
+    
+    # 환경 디버깅
+    debug_environment()
+    
+    try:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)
+        
+        # 강화된 데이터 다운로드
+        data = download_data_robust(tickers, start_date, end_date)
+        
+        # 분석
+        results = []
+        for name, ticker in tickers.items():
+            result = analyze_individual_asset(name, ticker, data, end_date)
+            if result:
+                results.append(result)
+        
+        logger.info(f"분석 완료: {len(results)}개 자산")
+        
+        # 자산 선택 및 메시지 생성
+        selected_assets = select_assets(results)
+        message = create_portfolio_message(selected_assets, end_date)
+        
+        # 출력 및 전송
+        print("\n" + "=" * 50)
+        print(message.replace('<b>', '').replace('</b>', ''))
+        print("=" * 50)
+        
+        send_telegram(message)
+        logger.info("✓ 분석 완료")
+        
+    except Exception as e:
+        error_msg = f"❌ 분석 오류: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        send_telegram(error_msg)
+        raise
+
+def validate_environment():
+    """환경 설정 검증"""
+    try:
+        test_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe"
+        response = requests.get(test_url, timeout=5)
+        if response.status_code == 200:
+            logger.info("✓ 텔레그램 연결 확인")
+            return True
+        else:
+            logger.error(f"❌ 텔레그램 연결 실패: {response.text}")
+            return False
+    except Exception as e:
+        logger.warning(f"⚠️ 텔레그램 연결 테스트 실패: {e}")
+        return True  # 분석은 계속 진행
+
+# ======================== [실행] ========================
+if __name__ == "__main__":
+    try:
+        validate_environment()
+        analyze_momentum()
+        print("\n✅ 모든 작업 완료!")
+    except KeyboardInterrupt:
+        logger.info("⏹️ 중단됨")
+    except Exception as e:
+        logger.error(f"💥 예상치 못한 오류: {e}", exc_info=True)
