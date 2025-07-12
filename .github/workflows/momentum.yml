@@ -54,7 +54,7 @@ jobs:
     
     # 5. 실행 권한 부여 (필요시)
     - name: 🔐 실행 권한 설정
-      run: chmod +x momentum_analysis.py
+      run: chmod +x main.py
     
     # 6. 모멘텀 분석 실행
     - name: 📊 모멘텀 분석 실행
@@ -62,7 +62,7 @@ jobs:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHAT_ID: ${{ secrets.CHAT_ID }}
       run: |
-        python momentum_analysis.py
+        python main.py
     
     # 7. 로그 업로드 (실패시에도 업로드)
     - name: 📋 로그 파일 업로드
