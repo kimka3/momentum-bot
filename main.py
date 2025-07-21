@@ -10,7 +10,6 @@ import requests
 warnings.filterwarnings('ignore')
 
 class MomentumStrategy:
-    # --- [변경] 텔레그램 파라미터 추가 ---
     def __init__(self, tickers_dict, initial_capital=100000, momentum_threshold_min=1.2, momentum_threshold_max=3.0,
                  max_positions=4, risk_on_leverage=2.0, sma_filter_months=6,
                  macro_filter_ticker='^GSPC', macro_filter_sma_months=10, bok_api_key=None,
@@ -22,11 +21,9 @@ class MomentumStrategy:
         self.momentum_threshold_max = momentum_threshold_max
         self.max_positions = max_positions
         
-        # --- [변경] 동적 레버리지 설정 ---
         self.risk_on_leverage = risk_on_leverage
-        self.current_leverage = self.risk_on_leverage # 현재 레버리지를 상태 변수로 관리
+        self.current_leverage = self.risk_on_leverage
 
-        # --- [변경] 개별 자산 및 매크로 필터 설정 ---
         self.sma_filter_months = sma_filter_months
         self.macro_filter_ticker = macro_filter_ticker
         self.macro_filter_sma_months = macro_filter_sma_months
@@ -41,9 +38,8 @@ class MomentumStrategy:
         self.selected_assets_history = []
         self.bok_rates_cache = self._get_default_bok_rates()
         self.default_bok_rates = self._get_default_bok_rates()
-        self.is_risk_on = True # 시장 상태 (Risk ON/OFF)
+        self.is_risk_on = True
 
-        # --- [변경] 초기화 메시지 수정 ---
         filter_info = f"{self.sma_filter_months}개월 SMA 필터" if self.sma_filter_months > 0 else "개별 필터 없음"
         macro_filter_info = f"{self.macro_filter_sma_months}개월 SMA*1.01 매크로 필터 ({self.macro_filter_ticker})" if self.macro_filter_ticker else "매크로 필터 없음"
         print(f"--- 전략 초기화: Max Positions={self.max_positions}, Max Leverage={self.risk_on_leverage}x, {filter_info}, {macro_filter_info} ---")
@@ -52,7 +48,6 @@ class MomentumStrategy:
         """텔레그램으로 메시지 전송"""
         if not self.telegram_token or not self.chat_id:
             print("텔레그램 설정이 없어 콘솔에만 출력합니다.")
-            print(message)
             return
         
         try:
@@ -67,16 +62,16 @@ class MomentumStrategy:
                 print("✓ 텔레그램 메시지 전송 완료")
             else:
                 print(f"❌ 텔레그램 전송 실패: {response.status_code}")
-                print(message)  # 실패 시 콘솔에 출력
+        except Exception as e:
+            print(f"❌ 텔레그램 전송 오류: {e}")
+
     def _prepare_data(self, start_date_str, end_date_str):
         print("\nFetching all historical data in one batch... this may take a moment.")
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-        # --- [변경] 매크로 필터 개월 수도 고려하여 데이터 확보 ---
         required_offset = max(14, self.sma_filter_months + 2, self.macro_filter_sma_months + 2)
         data_start_date = start_date - pd.DateOffset(months=required_offset)
         end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
 
-        # --- [변경] 매크로 필터 티커도 다운로드 목록에 포함 ---
         all_tickers = list(self.tickers_dict.values())
         if self.macro_filter_ticker and self.macro_filter_ticker not in all_tickers:
             all_tickers.append(self.macro_filter_ticker)
@@ -102,7 +97,6 @@ class MomentumStrategy:
             self.price_data = None
 
     def _get_default_bok_rates(self):
-        # (기존과 동일)
         return {
             "2018-07": 1.50, "2018-08": 1.50, "2018-09": 1.50, "2018-10": 1.50, "2018-11": 1.75, "2018-12": 1.75,
             "2019-01": 1.75, "2019-02": 1.75, "2019-03": 1.75, "2019-04": 1.75, "2019-05": 1.75, "2019-06": 1.75,
@@ -122,25 +116,21 @@ class MomentumStrategy:
         }
 
     def get_bok_rate(self, date_str):
-        # (기존과 동일)
         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
         date_key = date_obj.strftime('%Y-%m')
         available_dates = sorted([k for k in self.bok_rates_cache.keys() if k <= date_key])
         return self.bok_rates_cache[available_dates[-1]] if available_dates else 1.50
 
     def initialize_bok_data(self, start_date, end_date):
-        # (기존과 동일)
         print(f"기준금리 데이터 초기화 중...")
         self.bok_rates_cache = self.default_bok_rates.copy()
 
     def get_month_end_dates(self, start_date_str, end_date_str):
-        # (기존과 동일)
         all_months = self.price_data.loc[start_date_str:end_date_str].index.to_period('M').unique()
         month_end_dates = [self.price_data.loc[self.price_data.index.to_period('M') == m].index.max() for m in all_months]
         return [d.strftime('%Y-%m-%d') for d in sorted(month_end_dates)]
 
     def get_trading_day_price(self, ticker, target_date_str):
-        # (기존과 동일)
         try:
             target_date = pd.to_datetime(target_date_str)
             price = self.price_data[ticker].asof(target_date)
@@ -149,7 +139,6 @@ class MomentumStrategy:
             return None
 
     def calculate_momentum_score(self, ticker, end_date_str):
-        # (기존과 동일)
         try:
             end_date = pd.to_datetime(end_date_str)
             ticker_prices = self.price_data[ticker].dropna()
@@ -180,35 +169,31 @@ class MomentumStrategy:
         print(f"\n=== {date_str} 모멘텀 분석 ===")
         target_date = pd.to_datetime(date_str)
 
-        # --- [추가] 1. 매크로 필터 로직 ---
         if self.macro_filter_ticker:
-            macro_window = self.macro_filter_sma_months * 21 # 1개월=21영업일
+            macro_window = self.macro_filter_sma_months * 21
             macro_sma_series = self.price_data[self.macro_filter_ticker].rolling(window=macro_window).mean()
             
             current_macro_price = self.get_trading_day_price(self.macro_filter_ticker, date_str)
             macro_sma_value = macro_sma_series.asof(target_date)
 
             if current_macro_price is not None and pd.notna(macro_sma_value):
-                # --- [변경] 10개월 이평의 1.01배(101%) 기준으로 변경 ---
                 macro_threshold = macro_sma_value * 1.01
                 self.is_risk_on = current_macro_price > macro_threshold
                 status = "ON" if self.is_risk_on else "OFF"
                 print(f"  [매크로 필터] 시장 '위험 {status}' 상태 ({self.macro_filter_ticker} 현재가 {current_macro_price:.2f} vs {self.macro_filter_sma_months}개월 SMA*1.01 {macro_threshold:.2f})")
             else:
-                self.is_risk_on = False # 데이터 없으면 보수적으로 OFF
+                self.is_risk_on = False
                 print("  [매크로 필터] 데이터 부족으로 '위험 OFF' 처리")
         
-        # --- [추가] 2. 동적 레버리지 설정 ---
         if self.is_risk_on:
             self.current_leverage = self.risk_on_leverage
         else:
-            self.current_leverage = 1.0 # 위험 OFF 시 레버리지 1배 (현금 투자)
+            self.current_leverage = 1.0
             print("  - 매크로 필터 '위험 OFF' 상태. 전량 현금 보유로 전환합니다.")
             print(f"\n선택된 자산 (0개):")
             print(f"\n선택된 자산이 없음 → 현금성 자산 투자 (기준금리: {self.get_bok_rate(date_str)}%)")
-            return [] # 투자 진행 안 함
+            return []
 
-        # --- [기존 로직] 매크로 필터 통과 시에만 아래 로직 실행 ---
         sma_df = None
         if self.sma_filter_months > 0:
             window_size = self.sma_filter_months * 21
@@ -259,7 +244,6 @@ class MomentumStrategy:
         return final_assets
 
     def _apply_crypto_weight_limit(self, qualified_assets):
-        # (기존과 동일)
         crypto_assets = [a for a in qualified_assets if a['name'] in ["BTC/KRW", "ETH/KRW"]]
         non_crypto_assets = [a for a in qualified_assets if a['name'] not in ["BTC/KRW", "ETH/KRW"]]
 
@@ -287,7 +271,7 @@ class MomentumStrategy:
             for asset in total_assets:
                 asset['target_weight'] = crypto_weight if asset in selected_cryptos else non_crypto_weight
             return total_assets
-            
+
     def calculate_monthly_return(self, selected_assets, buy_date, sell_date):
         if not selected_assets:
             bok_rate = self.get_bok_rate(sell_date)
@@ -302,7 +286,6 @@ class MomentumStrategy:
 
             if buy_price and sell_price and buy_price > 0:
                 asset_return = (sell_price - buy_price) / buy_price
-                # --- [변경] 동적 레버리지(self.current_leverage) 사용 ---
                 leveraged_return = asset_return * self.current_leverage
                 total_weighted_return += leveraged_return * weight
                 total_weight += weight
@@ -320,7 +303,6 @@ class MomentumStrategy:
         return total_weighted_return
 
     def analyze_current_portfolio(self):
-        # --- [변경] 텔레그램 전송용 메시지 생성 ---
         print(f"\n{'=' * 80}\n현재 포트폴리오 분석 (Today's Portfolio)\n{'=' * 80}")
         today, analysis_date = datetime.now(), datetime.now().strftime('%Y-%m-%d')
         self._prepare_data("2015-01-01", analysis_date)
@@ -334,7 +316,6 @@ class MomentumStrategy:
         print(f"분석 기준일: {last_trading_day}")
         selected_assets = self.analyze_monthly_momentum(last_trading_day)
 
-        # 텔레그램 메시지 생성
         leverage_info = f"{self.current_leverage}x 레버리지" if self.is_risk_on else "현금 보유 (위험 OFF)"
         
         telegram_msg = f"📊 <b>모멘텀 전략 포트폴리오</b>\n"
@@ -359,13 +340,11 @@ class MomentumStrategy:
             telegram_msg += f"💵 전액 현금성 자산 투자\n"
             telegram_msg += f"📈 기준금리: {bok_rate}%\n\n"
         
-        # 매크로 필터 상태 추가
         if self.macro_filter_ticker:
             macro_status = "ON ✅" if self.is_risk_on else "OFF ❌"
             telegram_msg += f"🌍 <b>매크로 필터:</b> 위험 {macro_status}\n"
             telegram_msg += f"📊 기준: {self.macro_filter_ticker} > 10개월 SMA*1.01"
         
-        # 콘솔 출력 (기존 방식 유지)
         print(f"\n{'=' * 60}\n📊 현재 투자 포트폴리오 요약 ({leverage_info})\n{'=' * 60}")
         if selected_assets:
             total_risk_weight = sum(a.get('target_weight', 1/len(selected_assets)) for a in selected_assets)
@@ -380,9 +359,10 @@ class MomentumStrategy:
             print("\n❌ 현재 투자 조건을 만족하는 자산이 없습니다. 전액 현금성 자산 투자.")
         print(f"\n{'=' * 60}")
         
-        # 텔레그램 메시지 전송
         self.send_telegram_message(telegram_msg)
         return selected_assets
+
+
 if __name__ == "__main__":
     tickers = {
         "S&P 500": "^GSPC", "나스닥 종합": "^IXIC", "니케이 225": "^N225",
@@ -392,17 +372,16 @@ if __name__ == "__main__":
         "ETH/KRW": "ETH-KRW", "금 선물": "GC=F", "미국 20년 국채 ETF": "TLT"
     }
     
-    # --- [변경] 텔레그램 설정 추가 ---
     strategy = MomentumStrategy(
         tickers_dict=tickers,
         initial_capital=330000000,
         momentum_threshold_min=1.2,
         momentum_threshold_max=3.0,
         max_positions=4,
-        risk_on_leverage=2.0,          # '위험 ON' 상태일 때의 최대 레버리지
-        sma_filter_months=6,           # 개별 자산 필터
-        macro_filter_ticker='^GSPC',   # S&P 500을 매크로 필터로 사용
-        macro_filter_sma_months=10,    # 10개월 이평선 기준
+        risk_on_leverage=2.0,
+        sma_filter_months=6,
+        macro_filter_ticker='^GSPC',
+        macro_filter_sma_months=10,
         bok_api_key="YOUR_API_KEY",
         telegram_token="7200427583:AAE6ZBTRvhfSnrYWstUsOGdgnN4YUxy7OcQ",  # 텔레그램 봇 토큰
         chat_id="6932457088"         # 텔레그램 채팅 ID
